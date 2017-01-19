@@ -1,0 +1,165 @@
+---
+title: "MachLearnProject"
+author: "Scott D. Koenigsman"
+date: "January 19, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(ggplot2)
+library(dplyr)
+library(randomForest)
+set.seed(1210)
+```
+
+## Executive Summary
+
+The goal of the JHU Practical Machine Learning course project is to analyze a weight lifting dataset and develop a model to predict one of five possible outcomes. See Acknowledgement section for further details on the dataset.
+
+The analysis that follows includes some basic data cleaning, and development of three models:
+
+1. A basic logistic regression model
+2. A random forest model
+3. An ensemble of five random forest models
+
+The random forest and ensemble model predicted out of sample errors is less than .005%.
+
+The ensemble model is used to predict the test samples for the course quiz, resulting in 100% accuracy.
+
+## Load and Clean the Data
+
+Get the data from the course website and clean:
+
+1. Download training and test data from course website.
+2. Read into R, converting #DIV/0! strings to NAs.
+3. Drop all columns with NAs (too many NAs to impute).
+4. Drop the index, user_name, timestamp, window info (first 7 columns).
+5. Convert the response column to a factor for classification.
+
+```{r getdata}
+trainUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+if (!file.exists("pml-training.csv")) 
+  download.file(trainUrl, "./pml-training.csv", method = "curl")
+if (!file.exists("pml-testing.csv")) 
+  download.file(testUrl, "./pml-testing.csv", method = "curl")
+
+# read data
+training <- read.csv("./pml-training.csv", stringsAsFactors = FALSE, na.strings = c("NA", "#DIV/0!"))
+testing <- read.csv("./pml-testing.csv", stringsAsFactors = FALSE, na.strings = c("NA", "#DIV/0!"))
+
+# drop all columns with NAs
+noNAs <- colnames(training[colSums(is.na(training)) == 0])
+tr1 <- training[noNAs]
+noNAs <- colnames(testing[colSums(is.na(testing)) == 0])
+te1 <- testing[noNAs]
+
+# drop the index, user_name, timestamp, window info (first 7 columns)
+tr1 <- tr1[-(1:7)]
+te1 <- te1[-(1:7)]
+
+# convert classe to factor
+tr1$classe <- as.factor(tr1$classe)
+
+# summarize training data
+str(tr1)
+```
+
+### Split Training Data into Training/Validation Sets
+
+In order to perform cross-validation of models, the training data is split into 75/25 training/validation sets.
+
+```{r splitdata}
+# split the training set into a train and val partition
+inTrain <- createDataPartition(y=tr1$classe, p=0.75, list=FALSE )
+tr <- tr1[inTrain,]
+val <- tr1[-inTrain,]
+```
+
+### Logistic Regression
+
+As a basline model, we will try logistic regression. Since our response has 5 levels, we use a one vs all approach, that is we split the response into a series of binary responses (e.g. A vs. notA, B vs. notB, etc.) and train a model for each response. First we will train a model for the A/notA response and evaluate performance.
+
+```{r linearmmodel}
+# replace the response column with a binary response A/notA
+trA <- tr[-ncol(tr)]
+trA$isA <- as.factor(tr$classe=="A")
+
+# fit a linear model
+fitlmA <- glm(isA ~ ., data=trA, family=binomial(link="logit"))
+
+# predict on the training data and generate confusion matrix
+predtrlmA <- predict(fitlmA, newdata=trA)
+predtrlmA01 <- ifelse(predtrlmA > 0.5,TRUE,FALSE)
+acctrlmA = sum(predtrlmA01==trA$isA)/length(trA$isA)
+cmtrlmA <- confusionMatrix(predtrlmA01,trA$isA)
+cmtrlmA$table
+```
+
+The in sample accuracy is `r acctrlmA` on the training data. Rather than computing the remaining binary models, we will proceed to more sophisticated models.
+
+### Random Forest
+We would expect a random forest model to outperform the logistic regression model. First we will try a single random forest, limiting number trees to 100.
+```{r randforest}
+xtr <- tr[-ncol(tr)]
+ytr <- tr$classe
+
+fitrf <- randomForest(x=xtr, y=ytr, ntree=100)
+
+# predict on the training data and generate confusion matrix
+predtrrf <- predict(fitrf,newdata=tr)
+cmtrrf <- confusionMatrix(predtrrf,ytr)
+cmtrrf$table
+
+# predict on the validation data and generate confusion matrix
+predvalrf <- predict(fitrf,newdata=val)
+accvalrf = sum(predvalrf==val$classe)/length(val$classe)
+cmvalrf <- confusionMatrix(predvalrf,val$classe)
+cmvalrf$table
+```
+
+The estimated out of sample error based on the validation data is `r (1-accvalrf)`. The confusion matrix shows that we misclassify very few sample from the validation set. 
+
+### Ensemble Random Forest
+
+We can look for incremental improvement by creating a ensemble of random forest models.
+```{r ensemble}
+
+fitrf2 <- randomForest(x=xtr, y=ytr, ntree=100)
+fitrf3 <- randomForest(x=xtr, y=ytr, ntree=100)
+fitrf4 <- randomForest(x=xtr, y=ytr, ntree=100)
+fitrf5 <- randomForest(x=xtr, y=ytr, ntree=100)
+
+fitrfall <- combine(fitrf, fitrf2, fitrf3, fitrf4, fitrf5)
+
+predtrrfall <- predict(fitrfall,newdata=tr)
+cmtrrfall <- confusionMatrix(predtrrfall,ytr)
+cmtrrfall$table
+
+predvalrfall <- predict(fitrfall,newdata=val)
+accvalrfall = sum(predvalrfall==val$classe)/length(val$classe)
+cmvalrfall <- confusionMatrix(predvalrfall,val$classe)
+cmvalrfall$table
+```
+
+Comparing the five model ensemble validation confusion matrix to the single random forest model, we see a slight improvement. The estimated out of sample error for the ensemble model based on the validation data is `r (1-accvalrfall)`.
+
+### Predict on Test Set
+
+We can use the ensemble model to predict on the test data.
+
+```{r predicttest}
+predtest <- predict(fitrfall,newdata=te1)
+predtest
+```
+
+### Acknowledgements
+
+The data for this project originally came from the Weight Lifting Exercises Dataset:
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz4WFP0J7Vn
